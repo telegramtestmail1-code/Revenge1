@@ -202,16 +202,15 @@ async def get_command_chat_id(event):
 
 
 async def join_group_from_link(link: str) -> tuple[int, str]:
-    """Join a public group or an invite-link group and return its marked chat ID."""
+    """Join a public username link or a private Telegram invite link."""
     if client is None:
         raise RuntimeError("Telegram client is not initialized.")
 
     value = link.strip()
     if not value:
-        raise ValueError("Provide a Telegram group link.")
+        raise ValueError("Usage: .join <group_link>")
 
-    # Accept @username, t.me/username, telegram.me/username,
-    # t.me/+invitehash, and t.me/joinchat/invitehash.
+    # Support @username, t.me/username, t.me/+hash and t.me/joinchat/hash.
     if value.startswith("@"):
         username = value[1:]
         entity = await client.get_entity(username)
@@ -221,13 +220,13 @@ async def join_group_from_link(link: str) -> tuple[int, str]:
             pass
         return int(utils.get_peer_id(entity)), getattr(entity, "title", username)
 
-    if "://" not in value and not value.startswith("t.me/") and not value.startswith("telegram.me/"):
-        value = "https://" + value
+    if "://" not in value:
+        value = "https://" + value.lstrip("/")
 
     parsed = urlparse(value)
     host = (parsed.netloc or "").lower().split(":")[0]
     if host not in {"t.me", "www.t.me", "telegram.me", "www.telegram.me"}:
-        raise ValueError("Use a t.me or telegram.me group link.")
+        raise ValueError("Use a valid t.me or telegram.me group link.")
 
     parts = [part for part in parsed.path.split("/") if part]
     if not parts:
@@ -240,27 +239,42 @@ async def join_group_from_link(link: str) -> tuple[int, str]:
         invite_hash = parts[1]
 
     if invite_hash:
+        entity = None
         try:
             result = await client(ImportChatInviteRequest(invite_hash))
             chats = getattr(result, "chats", None) or []
-            if not chats:
-                raise RuntimeError("Telegram did not return the group details.")
-            entity = chats[0]
+            if chats:
+                entity = chats[0]
         except UserAlreadyParticipantError:
-            result = await client(CheckChatInviteRequest(invite_hash))
-            entity = getattr(result, "chat", None)
-            if entity is None:
-                raise RuntimeError("Already joined, but Telegram did not return the group details.")
+            pass
+
+        # Telegram may confirm the join but omit chats in the Updates result.
+        # CheckChatInvite returns ChatInviteAlready with the joined chat.
+        if entity is None:
+            try:
+                invite_info = await client(CheckChatInviteRequest(invite_hash))
+                entity = getattr(invite_info, "chat", None)
+            except Exception as check_exc:
+                logging.warning("Could not resolve joined invite chat: %s", check_exc)
+
+        if entity is None:
+            raise RuntimeError(
+                "Telegram accepted the invite but did not provide the group entity. "
+                "Please send the group link again or use the group's public @username."
+            )
+
         return int(utils.get_peer_id(entity)), getattr(entity, "title", "joined group")
 
     username = parts[0].lstrip("@")
-    if username in {"c", "addstickers", "share"}:
+    if username in {"c", "addstickers", "share", "proxy", "socks"}:
         raise ValueError("That link is not a public group link.")
+
     entity = await client.get_entity(username)
     try:
         await client(JoinChannelRequest(entity))
     except UserAlreadyParticipantError:
         pass
+
     return int(utils.get_peer_id(entity)), getattr(entity, "title", username)
 
 
@@ -597,3 +611,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    

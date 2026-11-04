@@ -1,1 +1,1 @@
-worker: python revenge1.py
+worker: python revenge1_updated.py
